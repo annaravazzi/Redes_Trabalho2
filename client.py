@@ -1,9 +1,9 @@
 import socket
+from host import Host
 
-class Client:
+class Client(Host):
     def __init__(self, IP, port):
-        self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.client_socket.connect((IP, port))
+        self.tcp_socket.connect((IP, port))
         print(f"Connected to server at {IP}:{port}")
     
     def send_message(self, message):

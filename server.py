@@ -1,5 +1,7 @@
 import socket
 import threading
+from macros import BUFF_SIZE, Commands, Status
+import hash
 
 class Server:
     def __init__(self, IP, port):
@@ -7,6 +9,7 @@ class Server:
         self.server_socket.bind((IP, port))
         self.server_socket.listen()
         print(f"Server listening on {IP}:{port}")
+        self.accept_connections()
     
     def accept_connections(self):
         while True:
@@ -19,19 +22,35 @@ class Server:
         is_connected = True
         while is_connected:
             try:
-                message = client_socket.recv(1024).decode('utf-8')
-                if message == "EXIT":
+                data = client_socket.recv(BUFF_SIZE)
+                h, msg = hash.get_hash_msg(data)
+                if not hash.verify_hash(msg, h):
+                    self.send(client_socket, Status.BAD_REQUEST)
+                if msg.decode('utf-8') == Commands.EXIT:
                     print("Client requested to disconnect.")
-                    client_socket.send("ACK: DISCONNECT".encode('utf-8'))
                     is_connected = False
-                else:
-                    print(f"Received message: {message}")
+                elif(msg.split()[0] == Commands.GET_FILE):
+                    filename = msg.split()[1]
+                    file_data, file_size = self.load_file(filename)
+
             except Exception as e:
                 print(f"An error occurred: {e}")
                 is_connected = False
 
         client_socket.close()
 
+    def load_file(self, filename):
+        try:
+            with open(filename, 'rb') as file:
+                f = file.read()
+                return f, len(f)
+        except FileNotFoundError:
+            print(f"File {filename} not found.")
+            return None, 0
+        
+    def send(self, client_socket, message):
+        encapsulated_msg = hash.encapsulate(message)
+        client_socket.send(encapsulated_msg)
+
 if __name__ == "__main__":
     server = Server("localhost", 12345)
-    server.accept_connections()
