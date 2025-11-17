@@ -1,10 +1,13 @@
 BUFF_SIZE = 1024
+DIR_SERVER = "server_files/"
+DIR_CLIENT = "client_files/"
 
 class Commands:
     EXIT = "EXIT"
     GET_FILE = "GET_FILE"
 
 class Status:
-    OK = "OK"
-    BAD_REQUEST = "BAD_REQUEST"
-    NOT_FOUND = "NOT_FOUND"
+    OK = 0
+    BAD_REQUEST = 1
+    NOT_FOUND = 2
+    HEADER_TOO_LARGE = 3
