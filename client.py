@@ -1,5 +1,5 @@
 import socket
-from macros import BUFF_SIZE, DIR_CLIENT, Commands, Status
+from macros import BUFF_SIZE, MAX_CHAT_MESSAGE_SIZE, DIR_CLIENT, Commands, Status
 from hash import verify_hash
 
 class Client():
@@ -14,11 +14,21 @@ class Client():
         Loop principal do cliente para comunicação com o servidor.
         """
         while True:
-            req = input("Enter command (GET_FILE <filename> or EXIT): ")
+            req = input("Enter command (GET_FILE, CHAT or EXIT): ")
+            command = req.split(' ')[0]
 
-            self.send_message(req)  # Envia comando ao servidor
+            if command == Commands.CHAT:
+                try:
+                    message = req[len(Commands.CHAT) + 1:]
+                except IndexError:
+                    message = ''
+                if len(message) > MAX_CHAT_MESSAGE_SIZE:
+                    print(f"ERROR: Chat message exceeds maximum size of {MAX_CHAT_MESSAGE_SIZE} characters. Try again.")
+                    continue
 
-            if req == Commands.EXIT:    # Cliente deseja desconectar, sai do loop
+            self.send_message(req)  # Envia request ao servidor
+
+            if command == Commands.EXIT:    # Cliente deseja desconectar, sai do loop
                 print("Disconnecting from server.")
                 break
 
@@ -28,41 +38,47 @@ class Client():
                 print("ERROR: Connection to server lost.")
                 break
 
-            status, data = self.parse_response(response)    # Parseia a resposta do servidor
+            if command == Commands.CHAT:
+                self.handle_chat_response(*self.parse_chat_response(response))
 
-            # Erro na resposta
-            if status is None:
-                print("ERROR: Invalid response from server. Try again")
-                continue
+            elif command == Commands.GET_FILE:    
+                self.handle_file_response(*self.parse_file_response(response))
+
+            # status, data = self.parse_file_response(response)    # Parseia a resposta do servidor
+
+            # # Erro na resposta
+            # if status is None:
+            #     print("ERROR: Invalid response from server. Try again")
+            #     continue
             
-            # Resposta OK do servidor
-            if status == Status.OK:
-                # Dados inválidos
-                if data is None:
-                    print("ERROR: No valid data received from server. Try again.")
-                    continue
+            # # Resposta OK do servidor
+            # if status == Status.OK:
+            #     # Dados inválidos
+            #     if data is None:
+            #         print("ERROR: No valid data received from server. Try again.")
+            #         continue
 
-                filename, filesize, hash_value = data
-                # Recebe o arquivo do servidor
-                self.receive_file(filename, filesize, hash_value)
+            #     filename, filesize, hash_value = data
+            #     # Recebe o arquivo do servidor
+            #     self.receive_file(filename, filesize, hash_value)
 
-            else:   # Resposta de erro do servidor
-                if status == Status.BAD_REQUEST:
-                    print("ERROR: Bad request sent to server. Try again.")
-                elif status == Status.NOT_FOUND:
-                    print("ERROR: Requested file not found on server.")
-                elif status == Status.HEADER_TOO_LARGE:
-                    print("ERROR: Header too large. Reduce filename or file size.")
-                else:
-                    print("ERROR: Unknown response from server. Try again.")
+            # else:   # Resposta de erro do servidor
+            #     if status == Status.BAD_REQUEST:
+            #         print("ERROR: Bad request sent to server. Try again.")
+            #     elif status == Status.NOT_FOUND:
+            #         print("ERROR: Requested file not found on server.")
+            #     elif status == Status.HEADER_TOO_LARGE:
+            #         print("ERROR: Header too large. Reduce filename or file size.")
+            #     else:
+            #         print("ERROR: Unknown response from server. Try again.")
         
                 
         # Fecha o socket do cliente ao sair do loop
         self.close()
 
-    def parse_response(self, data):
+    def parse_file_response(self, data):
         """
-        Parseia a resposta do servidor.
+        Parseia a resposta de arquivo do servidor.
         Retorna o status e os outros dados recebidos.
         """
         try:
@@ -81,8 +97,57 @@ class Client():
             hash_value = data[11 + filename_len:43 + filename_len]
 
             return status, (filename, filesize, hash_value)
+        except IndexError or ValueError or UnicodeDecodeError:
+            return None, None
+    
+    def parse_chat_response(self, data):
+        """
+        Parseia a resposta de chat do servidor.
+        Retorna o status e a mensagem recebida.
+        """
+        try:
+            status = int.from_bytes(data[:1])   # Extrai o status da resposta
+        except IndexError or ValueError:
+            return None, None
+        
+        if status != Status.OK:     # Se não for OK, não há mais dados
+            return status, None
+        
+        try:
+            # Extrai o tamanho da mensagem e a mensagem em si
+            msg_len = int.from_bytes(data[1:3])
+            message = data[3:3 + msg_len].decode('utf-8')
+
+            return status, message
         except IndexError or ValueError:
             return status, None
+    
+    def handle_file_response(self, status, data):
+        """
+        Trata a resposta do servidor para requisição de arquivo.
+        """
+        if status == Status.OK:
+            filename, filesize, hash_value = data
+            self.receive_file(filename, filesize, hash_value)
+        elif status == Status.BAD_REQUEST:
+            print("ERROR: Bad request sent to server. Try again.")
+        elif status == Status.NOT_FOUND:
+            print("ERROR: Requested file not found on server.")
+        elif status == Status.HEADER_TOO_LARGE:
+            print("ERROR: Header too large. Reduce filename or file size.")
+        else:
+            print("ERROR: Unknown response format from server. Try again.")
+
+    def handle_chat_response(self, status, message):
+        """
+        Trata a resposta do servidor para requisição de chat.
+        """
+        if status == Status.OK:
+            print(f"Server says: {message}")
+        elif status == Status.BAD_REQUEST:
+            print("ERROR: Bad chat request sent to server. Try again.")
+        else:
+            print("ERROR: Unknown response format from server. Try again.")
         
     def receive_file(self, filename, filesize, hash_value):
         """

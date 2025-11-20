@@ -1,10 +1,12 @@
 BUFF_SIZE = 1024
+MAX_CHAT_MESSAGE_SIZE = 1000
 DIR_SERVER = "server_files/"
 DIR_CLIENT = "client_files/"
 
 class Commands:
     EXIT = "EXIT"
     GET_FILE = "GET_FILE"
+    CHAT = "CHAT"
 
 class Status:
     OK = 0
