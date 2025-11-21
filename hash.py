@@ -3,8 +3,9 @@ Pequena biblioteca para cálculo e verificação de hashes (SHA256).
 """
 
 import hashlib
+from macros import HASH_ALGORITHM
 
-def calc_hash(data, algorithm='sha256'):
+def calc_hash(data, algorithm=HASH_ALGORITHM):
     """
     Calcula o hash dos dados fornecidos (bytes) usando o algoritmo especificado.
     Retorna o hash em bytes.
@@ -13,14 +14,8 @@ def calc_hash(data, algorithm='sha256'):
     hash_func.update(data)
     return hash_func.digest()
 
-def verify_hash(data, hash, algorithm='sha256'):
+def verify_hash(data, hash, algorithm=HASH_ALGORITHM):
     """
     Verifica se o hash dos dados fornecidos corresponde ao hash fornecido.
     """
     return calc_hash(data, algorithm) == hash
-
-def get_hash_msg(data):
-    """
-    Separa o hash (primeiros 32 bytes) da mensagem nos dados encapsulados (em bytes).
-    """
-    # return data[:32], data[32:]

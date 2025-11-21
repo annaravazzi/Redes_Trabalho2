@@ -1,195 +1,211 @@
-import socket
-from macros import BUFF_SIZE, MAX_CHAT_MESSAGE_SIZE, DIR_CLIENT, Commands, Status
+from host import Host
+import threading
+from macros import DIR_CLIENT, Commands, Status
 from hash import verify_hash
 
-class Client():
+class Client(Host):
     def __init__(self, IP, port):
-        self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)  # Cria socket do cliente
-        self.client_socket.connect((IP, port))      # Conecta ao servidor dado
-        print(f"Connected to server at {IP}:{port}")    
+        super().__init__()
+        try:
+            self.tcp_socket.connect((IP, port))      # Conecta ao servidor dado
+        except Exception as e:
+            print(f"Failed to connect to server at {IP}:{port}: {e}")
+            return
+        print(f"Connected to server at {IP}:{port}")
+
+        self.shutdown_event = threading.Event()
+
+        # Inicia thread em segundo plano para receber as respostas do servidor
+        self.recv_thread = threading.Thread(target=self.receiver_loop, daemon=False)
+        self.recv_thread.start()
+
         self.execute()
     
     def execute(self):
         """
-        Loop principal do cliente para comunicação com o servidor.
+        Loop principal do cliente para comunicação com o servidor (requests).
+        """
+        try:
+            while True:
+                print("Select command:")
+                print("1. GET_FILE <filename>")
+                print("2. CHAT <message>")
+                print("3. EXIT")
+                sel = input()
+
+                if self.shutdown_event.is_set():
+                    break
+
+                if sel == '1':
+                    filename = input("Enter filename to get: ")
+                    req = f"{Commands.GET_FILE} {filename}"
+                    # req = f"{Commands.WRONG_COMMAND} {filename}"
+                    filename = ""
+                elif sel == '2':
+                    message = input("Enter chat message: ")
+                    req = f"{Commands.CHAT} i {str(len(message))} {message}"
+                    message = ""
+                elif sel == '3':
+                    req = Commands.EXIT
+                else:
+                    print("Invalid command. Please try again.")
+                    continue
+                
+                if self.shutdown_event.is_set():
+                    break
+                try:
+                    self.send_message(self.tcp_socket, req)  # Envia request ao servidor
+                except ConnectionError:
+                    print("Connection to server lost.")
+                    break
+
+                if req.startswith(Commands.EXIT):    # Cliente deseja desconectar, sai do loop
+                    print("Disconnecting from server.")
+                    break
+        except KeyboardInterrupt:
+            print("\nDisconnecting from server.")
+        finally:
+            self.shutdown_event.set()
+            try:
+                # Fecha socket e aguarda thread de recepção terminar
+                try:
+                    addr = self.tcp_socket.getpeername()
+                except Exception:
+                    addr = None
+                self.close_socket(self.tcp_socket, addr)
+            except Exception:
+                pass
+            try:
+                if self.recv_thread.is_alive():
+                    self.recv_thread.join(timeout=2.0)
+            except Exception:
+                pass
+
+    def receiver_loop(self):
+        """
+        Thread em segundo plano para receber mensagens do servidor.
         """
         while True:
-            req = input("Enter command (GET_FILE, CHAT or EXIT): ")
-            command = req.split(' ')[0]
+            if self.shutdown_event.is_set():
+                break
+            data = self.receive_message(self.tcp_socket)
+            if data is None:
+                print("Connection to server lost.")
+                break
+            if data == "TIMEOUT":
+                continue
 
-            if command == Commands.CHAT:
+            # Processa a mensagem recebida
+            status, content = self.parse_response(data)
+
+            # Mensagem de chat
+            if status == Commands.CHAT:
+                message_len, message = content
                 try:
-                    message = req[len(Commands.CHAT) + 1:]
-                except IndexError:
-                    message = ''
-                if len(message) > MAX_CHAT_MESSAGE_SIZE:
-                    print(f"ERROR: Chat message exceeds maximum size of {MAX_CHAT_MESSAGE_SIZE} characters. Try again.")
-                    continue
+                    while len(message) < message_len:
+                        if self.shutdown_event.is_set():
+                            raise Exception
+                        # Consome o restante da mensagem
+                        remaining = self.receive_message(self.tcp_socket, message_len - len(message))
+                        if remaining is None:
+                            print("Connection to server lost.")
+                            raise Exception
+                        if remaining == "TIMEOUT":
+                            continue
+                        try:
+                            message += remaining.decode('utf-8')
+                        except UnicodeDecodeError:
+                            pass
+                except Exception:
+                    break
+                print(f"[SERVER] {message}")
 
-            self.send_message(req)  # Envia request ao servidor
+            # Resposta de arquivo
+            elif status == Status.OK:
+                filename, file_size, hash_value, file_data = content
+                try:
+                    while file_size > len(file_data):
+                        if self.shutdown_event.is_set():
+                            raise Exception
+                        # Consome o restante do arquivo
+                        remaining = self.receive_message(self.tcp_socket, file_size - len(file_data))
+                        if remaining is None:
+                            print("Connection to server lost.")
+                            raise Exception
+                        if remaining == "TIMEOUT":
+                            continue
+                       
+                        file_data += remaining
+                except Exception:
+                    break
 
-            if command == Commands.EXIT:    # Cliente deseja desconectar, sai do loop
-                print("Disconnecting from server.")
-                break
+                # Verifica o hash do arquivo recebido
+                if verify_hash(file_data, hash_value):
+                    with open(DIR_CLIENT + filename, 'wb') as file:
+                        file.write(file_data)
+                    print(f"File '{filename}' received successfully and saved to '{DIR_CLIENT}'.")
+                else:
+                    print("ERROR: Hash verification failed. File may be corrupted.")
 
+            # Erros do servidor
+            elif status == Status.NOT_FOUND:
+                print("ERROR: File not found on server.")
+            elif status == Status.FILE_TOO_LARGE:
+                print("ERROR: File too large to be sent by server.")
+            elif status == Status.HEADER_TOO_LARGE:
+                print("ERROR: Header too large to be processed.")
+            elif status == Status.BAD_REQUEST:
+                print("ERROR: Bad request sent to server.")
+            else:
+                print("ERROR: Unknown response from server.")
+        
+        self.shutdown_event.set()
+        try:
             try:
-                response = self.client_socket.recv(BUFF_SIZE)   # Recebe resposta do servidor
-            except ConnectionResetError:
-                print("ERROR: Connection to server lost.")
-                break
-
-            if command == Commands.CHAT:
-                self.handle_chat_response(*self.parse_chat_response(response))
-
-            elif command == Commands.GET_FILE:    
-                self.handle_file_response(*self.parse_file_response(response))
-
-            # status, data = self.parse_file_response(response)    # Parseia a resposta do servidor
-
-            # # Erro na resposta
-            # if status is None:
-            #     print("ERROR: Invalid response from server. Try again")
-            #     continue
-            
-            # # Resposta OK do servidor
-            # if status == Status.OK:
-            #     # Dados inválidos
-            #     if data is None:
-            #         print("ERROR: No valid data received from server. Try again.")
-            #         continue
-
-            #     filename, filesize, hash_value = data
-            #     # Recebe o arquivo do servidor
-            #     self.receive_file(filename, filesize, hash_value)
-
-            # else:   # Resposta de erro do servidor
-            #     if status == Status.BAD_REQUEST:
-            #         print("ERROR: Bad request sent to server. Try again.")
-            #     elif status == Status.NOT_FOUND:
-            #         print("ERROR: Requested file not found on server.")
-            #     elif status == Status.HEADER_TOO_LARGE:
-            #         print("ERROR: Header too large. Reduce filename or file size.")
-            #     else:
-            #         print("ERROR: Unknown response from server. Try again.")
-        
-                
-        # Fecha o socket do cliente ao sair do loop
-        self.close()
-
-    def parse_file_response(self, data):
-        """
-        Parseia a resposta de arquivo do servidor.
-        Retorna o status e os outros dados recebidos.
-        """
-        try:
-            status = int.from_bytes(data[:1])   # Extrai o status da resposta
-        except IndexError or ValueError:
-            return None, None
-        
-        if status != Status.OK:     # Se não for OK, não há mais dados
-            return status, None
-        
-        try:
-            # Separa os campos do cabeçalho e os dados do arquivo seguindo o protocolo
-            filename_len = int.from_bytes(data[1:3])
-            filename = data[3:3 + filename_len].decode('utf-8')
-            filesize = int.from_bytes(data[3 + filename_len:11 + filename_len])
-            hash_value = data[11 + filename_len:43 + filename_len]
-
-            return status, (filename, filesize, hash_value)
-        except IndexError or ValueError or UnicodeDecodeError:
-            return None, None
-    
-    def parse_chat_response(self, data):
-        """
-        Parseia a resposta de chat do servidor.
-        Retorna o status e a mensagem recebida.
-        """
-        try:
-            status = int.from_bytes(data[:1])   # Extrai o status da resposta
-        except IndexError or ValueError:
-            return None, None
-        
-        if status != Status.OK:     # Se não for OK, não há mais dados
-            return status, None
-        
-        try:
-            # Extrai o tamanho da mensagem e a mensagem em si
-            msg_len = int.from_bytes(data[1:3])
-            message = data[3:3 + msg_len].decode('utf-8')
-
-            return status, message
-        except IndexError or ValueError:
-            return status, None
-    
-    def handle_file_response(self, status, data):
-        """
-        Trata a resposta do servidor para requisição de arquivo.
-        """
-        if status == Status.OK:
-            filename, filesize, hash_value = data
-            self.receive_file(filename, filesize, hash_value)
-        elif status == Status.BAD_REQUEST:
-            print("ERROR: Bad request sent to server. Try again.")
-        elif status == Status.NOT_FOUND:
-            print("ERROR: Requested file not found on server.")
-        elif status == Status.HEADER_TOO_LARGE:
-            print("ERROR: Header too large. Reduce filename or file size.")
-        else:
-            print("ERROR: Unknown response format from server. Try again.")
-
-    def handle_chat_response(self, status, message):
-        """
-        Trata a resposta do servidor para requisição de chat.
-        """
-        if status == Status.OK:
-            print(f"Server says: {message}")
-        elif status == Status.BAD_REQUEST:
-            print("ERROR: Bad chat request sent to server. Try again.")
-        else:
-            print("ERROR: Unknown response format from server. Try again.")
-        
-    def receive_file(self, filename, filesize, hash_value):
-        """
-        Recebe o arquivo do servidor em pacotes e verifica o hash.
-        """
-        received_data = b''
-
-        # Continua recebendo dados até completar o tamanho do arquivo
-        while len(received_data) < filesize:
-            try:
-                packet = self.client_socket.recv(BUFF_SIZE)     # Socket TCP -> pacotes em ordem e sem perdas
-            except ConnectionResetError:
-                print("ERROR: Connection to server lost during file transfer. Aborting.")
-                return
-           
-            received_data += packet   # Adiciona os dados do arquivo recebido
-        
-        # Verifica o hash dos dados recebidos
-        if verify_hash(received_data, hash_value):
-            # Salva o arquivo recebido no diretório do cliente
-            with open(DIR_CLIENT + filename, 'wb') as file:
-                file.write(received_data)
-            print(f"File '{filename}' received successfully and saved to '{DIR_CLIENT}'.")
-        else:
-            print(hash_value)
-            print("ERROR: Hash verification failed. File may be corrupted.")
-
-        
-    def close(self):
-        """
-        Fecha o socket do cliente.
-        """
-        try:
-            self.client_socket.shutdown(socket.SHUT_RDWR)
-        except OSError:
+                addr = self.tcp_socket.getpeername()
+            except Exception:
+                addr = None
+            self.close_socket(self.tcp_socket, addr)
+        except Exception:
             pass
-        finally:
-            self.client_socket.close()
 
+    def parse_response(self, data):
+        """
+        Parseia a resposta do servidor.
+        Retorna o tipo de resposta (chat ou arquivo) e os dados associados.
+        Formato esperado da mensagem de chat: "CHAT <msg_len>(2) <msg>"
+        Formato esperado do header do arquivo: status(1) | filename_len(2) | filename | file_size(8) | hash_len(2) | hash
+        """
+        try:
+            text = data.decode('utf-8')
+        except UnicodeDecodeError:
+            text = ""
+        if text.startswith(Commands.CHAT):  # Mensagem de chat
+            try:
+                message_len = int(text.split(' ', 2)[1])
+                message = text.split(' ', 2)[2]
+                return Commands.CHAT, (message_len, message)
+            except IndexError:
+                return None, None
 
-    def send_message(self, message):
-        self.client_socket.send(message.encode('utf-8'))
+        try:
+            status = int.from_bytes(data[:1], 'big')   # Extrai o status da resposta
+        except (IndexError, ValueError):
+            return None, None
+        
+        if status != Status.OK:
+            return status, None
+        try:
+            # Extrai os dados do arquivo
+            filename_len = int.from_bytes(data[1:3], 'big')
+            filename = data[3:3+filename_len].decode('utf-8')
+            file_size = int.from_bytes(data[3+filename_len:11+filename_len], 'big')
+            hash_len = int.from_bytes(data[11+filename_len:13+filename_len], 'big')
+            hash_value = data[13+filename_len:13+filename_len+hash_len]
+            file_data = data[13+filename_len+hash_len:]
+            return status, (filename, file_size, hash_value, file_data)
+        except (IndexError, ValueError, UnicodeDecodeError):
+            return None, None
     
 if __name__ == "__main__":
     client = Client("localhost", 12345)
