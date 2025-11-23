@@ -1,3 +1,8 @@
+"""
+Módulo cliente para comunicação com o servidor usando TCP.
+Envia requests de arquivos e mensagens de chat ao servidor e processa as respostas recebidas.
+"""
+
 from host import Host
 import threading
 from macros import DIR_CLIENT, Commands, Status
@@ -13,7 +18,7 @@ class Client(Host):
             return
         print(f"Connected to server at {IP}:{port}")
 
-        self.shutdown_event = threading.Event()
+        self.shutdown_event = threading.Event()     # Evento para sinalizar encerramento
 
         # Inicia thread em segundo plano para receber as respostas do servidor
         self.recv_thread = threading.Thread(target=self.receiver_loop, daemon=False)
@@ -33,17 +38,18 @@ class Client(Host):
                 print("3. EXIT")
                 sel = input()
 
+                # Encerra loop se sinal de encerramento foi setado
                 if self.shutdown_event.is_set():
                     break
 
                 if sel == '1':
                     filename = input("Enter filename to get: ")
-                    req = f"{Commands.GET_FILE} {filename}"
-                    # req = f"{Commands.WRONG_COMMAND} {filename}"
+                    # req = f"{Commands.GET_FILE} {filename}"
+                    req = f"{Commands.WRONG_COMMAND} {filename}"      # Para testar comando inválido
                     filename = ""
                 elif sel == '2':
                     message = input("Enter chat message: ")
-                    req = f"{Commands.CHAT} i {str(len(message))} {message}"
+                    req = f"{Commands.CHAT} {str(len(message))} {message}"
                     message = ""
                 elif sel == '3':
                     req = Commands.EXIT
@@ -51,8 +57,6 @@ class Client(Host):
                     print("Invalid command. Please try again.")
                     continue
                 
-                if self.shutdown_event.is_set():
-                    break
                 try:
                     self.send_message(self.tcp_socket, req)  # Envia request ao servidor
                 except ConnectionError:
@@ -62,12 +66,14 @@ class Client(Host):
                 if req.startswith(Commands.EXIT):    # Cliente deseja desconectar, sai do loop
                     print("Disconnecting from server.")
                     break
+
         except KeyboardInterrupt:
-            print("\nDisconnecting from server.")
+            print("Disconnecting from server.")     # Encerramento via Ctrl+C
         finally:
+            # Seta o sinal de encerramento
             self.shutdown_event.set()
             try:
-                # Fecha socket e aguarda thread de recepção terminar
+                # Fecha socket e aguarda thread de recepção terminar antes de dar join
                 try:
                     addr = self.tcp_socket.getpeername()
                 except Exception:
@@ -86,9 +92,11 @@ class Client(Host):
         Thread em segundo plano para receber mensagens do servidor.
         """
         while True:
+            # Encerra loop se sinal de encerramento foi setado
             if self.shutdown_event.is_set():
                 break
-            data = self.receive_message(self.tcp_socket)
+
+            data = self.receive_message(self.tcp_socket)    # Recebe dados do servidor
             if data is None:
                 print("Connection to server lost.")
                 break
@@ -102,10 +110,10 @@ class Client(Host):
             if status == Commands.CHAT:
                 message_len, message = content
                 try:
+                    # Consome o restante da mensagem (se não veio completa)
                     while len(message) < message_len:
                         if self.shutdown_event.is_set():
                             raise Exception
-                        # Consome o restante da mensagem
                         remaining = self.receive_message(self.tcp_socket, message_len - len(message))
                         if remaining is None:
                             print("Connection to server lost.")
@@ -113,21 +121,24 @@ class Client(Host):
                         if remaining == "TIMEOUT":
                             continue
                         try:
-                            message += remaining.decode('utf-8')
+                            message += remaining.decode('utf-8')    # Adiciona parte recebida
+
                         except UnicodeDecodeError:
                             pass
-                except Exception:
+                except Exception:   # Exceção geral para sair do loop (conexão perdida ou encerramento)
                     break
-                print(f"[SERVER] {message}")
+
+                # Printa mensagem de chat recebida do server
+                print(f"[SERVER] {message}")    
 
             # Resposta de arquivo
             elif status == Status.OK:
                 filename, file_size, hash_value, file_data = content
                 try:
+                    # Consome o restante do arquivo (se não veio completo)
                     while file_size > len(file_data):
                         if self.shutdown_event.is_set():
                             raise Exception
-                        # Consome o restante do arquivo
                         remaining = self.receive_message(self.tcp_socket, file_size - len(file_data))
                         if remaining is None:
                             print("Connection to server lost.")
@@ -135,12 +146,14 @@ class Client(Host):
                         if remaining == "TIMEOUT":
                             continue
                        
-                        file_data += remaining
-                except Exception:
+                        file_data += remaining  # Adiciona parte recebida
+
+                except Exception:   # Exceção geral para sair do loop (conexão perdida ou encerramento)
                     break
 
                 # Verifica o hash do arquivo recebido
                 if verify_hash(file_data, hash_value):
+                    # Salva o arquivo na pasta do cliente
                     with open(DIR_CLIENT + filename, 'wb') as file:
                         file.write(file_data)
                     print(f"File '{filename}' received successfully and saved to '{DIR_CLIENT}'.")
@@ -159,7 +172,10 @@ class Client(Host):
             else:
                 print("ERROR: Unknown response from server.")
         
+        # Seta o sinal de encerramento ao sair do loop
         self.shutdown_event.set()
+
+        # Fecha o socket
         try:
             try:
                 addr = self.tcp_socket.getpeername()
@@ -172,14 +188,14 @@ class Client(Host):
     def parse_response(self, data):
         """
         Parseia a resposta do servidor.
-        Retorna o tipo de resposta (chat ou arquivo) e os dados associados.
         Formato esperado da mensagem de chat: "CHAT <msg_len>(2) <msg>"
         Formato esperado do header do arquivo: status(1) | filename_len(2) | filename | file_size(8) | hash_len(2) | hash
         """
         try:
-            text = data.decode('utf-8')
+            text = data.decode('utf-8')     # Tenta decodificar como texto
         except UnicodeDecodeError:
             text = ""
+
         if text.startswith(Commands.CHAT):  # Mensagem de chat
             try:
                 message_len = int(text.split(' ', 2)[1])
@@ -188,6 +204,7 @@ class Client(Host):
             except IndexError:
                 return None, None
 
+        # Resposta de arquivo
         try:
             status = int.from_bytes(data[:1], 'big')   # Extrai o status da resposta
         except (IndexError, ValueError):
@@ -208,4 +225,10 @@ class Client(Host):
             return None, None
     
 if __name__ == "__main__":
-    client = Client("localhost", 12345)
+    ip = input("Enter server IP (default: localhost): ")
+    if not ip:
+        ip = "localhost"
+    port = input("Enter server port (default: 12345): ")
+    if not port:
+        port = 12345
+    client = Client(ip, port)

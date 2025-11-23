@@ -1,3 +1,7 @@
+"""
+Módulo servidor para comunicação com múltiplos clientes usando TCP.
+Responde a requests de arquivos e mensagens de chat dos clientes.
+"""
 import socket
 from host import Host
 import threading
@@ -7,10 +11,11 @@ from hash import calc_hash
 class Server(Host):
     def __init__(self, IP, port):
         super().__init__()
+        # Inicia o servidor
         self.tcp_socket.bind((IP, port)) 
         self.tcp_socket.listen()
         print(f"Server listening on {IP}:{port}")
-        print("Type messages to broadcast to all clients or to a specific (ip:port).")
+        print("Type messages to broadcast to all clients or to a specific (IP:port).")
         print("Press Ctrl+C to stop the server.")
 
         # Mantém registro dos clientes conectados: mapeia socket -> endereço
@@ -49,6 +54,8 @@ class Server(Host):
                 except (IndexError, ValueError):
                     ip = None
                     port = None
+
+                # Compõe a mensagem de chat
                 msg = f"{Commands.CHAT} {str(len(line))} {line}"
 
                 # Envia mensagem de chat para todos os clientes ou para um cliente específico
@@ -75,7 +82,7 @@ class Server(Host):
     def execute_acceptor(self):
         """
         Loop que aceita conexões de clientes e inicia uma thread para cada cliente.
-        (executa em uma thread em segundo plano)
+        (executa em segundo plano)
         """
         while True:
             # Checa se o servidor será encerrado
@@ -83,16 +90,15 @@ class Server(Host):
                 return
             try:
                 client_socket, client_address = self.tcp_socket.accept()     # Cria socket para o cliente
-            except socket.timeout:
-                continue
-            except OSError:
-                # Servidor continua on
+            except (socket.timeout, OSError):
                 continue
 
             print(f"Connection established with {client_address}")
+
             # Adiciona o cliente à lista de clientes conectados
             with self.clients_lock:
                 self.clients[client_socket] = client_address
+
             # Inicia uma thread para tratar a comunicação com o cliente e armazena a thread
             client_thread = threading.Thread(target=self.handle_client, args=(client_socket, client_address), daemon=False)
             with self.clients_lock:
@@ -117,6 +123,7 @@ class Server(Host):
 
             try:
                 command = msg.decode('utf-8').split(' ', 1)[0]  # Extrai comando da mensagem
+
             except (UnicodeDecodeError, IndexError):
                 try:
                     self.send_message(client_socket, client_address, Status.BAD_REQUEST)
@@ -134,6 +141,7 @@ class Server(Host):
                     filename = msg.decode('utf-8').split(' ')[1]
                     print(f"Client {client_address} requested file: {filename}")
                     self.send_file(client_socket, filename)     # Envia o arquivo solicitado
+
                 except (UnicodeDecodeError, IndexError):
                     try:
                         self.send_message(client_socket, client_address, Status.BAD_REQUEST)
@@ -149,6 +157,7 @@ class Server(Host):
                     # Parsing do request
                     message_len = msg.decode('utf-8').split(' ', 2)[1]
                     message = msg.decode('utf-8').split(' ', 2)[2]
+
                 except (UnicodeDecodeError, IndexError):
                     try:
                         self.send_message(client_socket, client_address, Status.BAD_REQUEST)
@@ -156,21 +165,27 @@ class Server(Host):
                         break
                     print(f"ERROR: Unable to decode chat message from {client_address}.")
                     continue
+
+                # Recebe o restante da mensagem, se necessário
                 try:
                     while len(message) < int(message_len):
                         if self.server_shutdown_event.is_set():
                             raise Exception
+                        
                         remaining = self.receive_message(client_socket, client_address, int(message_len) - len(message))
                         if remaining is None:
                             raise Exception
                         if remaining == "TIMEOUT":
                             continue
+
+                        # Adiciona o restante da mensagem
                         message += remaining.decode('utf-8')
-                except Exception:
+
+                except Exception:   # Desconexão ao receber mensagem
                     break
 
                 # Mostra mensagem no console do servidor
-                print(f"[CLIENT] {client_address}: {message}")
+                print(f"[CLIENT {client_address}]: {message}")
             
             else:   # Comando desconhecido
                 try:
@@ -195,8 +210,7 @@ class Server(Host):
             return Status.NOT_FOUND, None
         except MemoryError:
             return Status.FILE_TOO_LARGE, None
-        except Exception as e:
-            print(f"ERROR: Exception while loading file {filename}: {e}")
+        except Exception:
             return Status.BAD_REQUEST, None
     
     def send_file(self, client_socket, filename):
@@ -225,7 +239,7 @@ class Server(Host):
         # Prepara os dados do arquivo
         file_data, file_size, hash_value = file_info
 
-        # Header
+        # Elementos do header
         try:
             status = Status.OK.to_bytes(1, 'big')
             filename_bytes = filename.encode('utf-8')
@@ -239,11 +253,16 @@ class Server(Host):
 
         # Monta o header completo
         header = status + filename_len + filename_bytes + file_size_bytes + hash_len + hash_value
+
         if len(header) > MAX_BUFF_SIZE:     # Header muito grande
             self.send_message(client_socket, Status.HEADER_TOO_LARGE)
             print("ERROR: Header too large to send.")
             return
         
+        # Simular bit flip no arquivo para teste
+        # file_data = file_data[:-1] + bytes([file_data[-1] ^ 0xFF])
+
+        # Envia o header e os dados do arquivo
         self.send_message(client_socket, header + file_data)
         
     def broadcast_message(self, message, specific_addr=None):
@@ -268,6 +287,7 @@ class Server(Host):
             addr = self.clients.pop(client_socket, None)
             thread = self.client_threads.pop(client_socket, None)
 
+        # Fecha o socket
         try:
             self.close_socket(client_socket, addr)
         except Exception:

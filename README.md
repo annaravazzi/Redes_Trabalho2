@@ -1,16 +1,27 @@
 # Aplicação simples de comunicação TCP
 
-Aplicação simples de requisição/download de arquivos e serviço de chat em Python usando sockets TCP.
+Programa cliente/servidor TCP simples para transferência de arquivos e chat.
 
 ## Protocolo
 ### Requisição (cliente):
-Cliente faz a requisição de um arquivo <filename>. Se ao fim do envio dos pacotes o arquivo não estiver completo, o TIMEOUT é atingido e o cliente faz requisição dos pacotes faltantes.
-- Get file: GET_FILE <filename>
-- Get packet: GET_PACK <filename> <packet_index>
+O cliente solicita arquivos, recebe e valida hash, e troca mensagens de chat.
+
+- `GET_FILE <filename>` — pede um arquivo ao servidor
+- `CHAT <msg_len> <message>` — envia mensagem de chat
+- `EXIT` — encerra o cliente
 
 ### Resposta (servidor):
-Servidor recebe as requisições do cliente e envia todos os pacotes do arquivo. Se mais pacotes forem requeridos, servidor envia os pacotes separadamente.
-- Pacote enviado: OK -> 0 <num_packets> <packet_index> <data_chunk>
-- Requisição malformada (checksum incorreto, erro de sintaxe, etc.): BAD_REQUEST -> 1
-- Arquivo não encontrado: NOT_FOUND -> 2
-- Arquivo muito grande: TOO_LARGE -> 3
+
+O servidor aceita múltiplos clientes, responde a requisições `GET_FILE`, transmite arquivos com cabeçalho estruturado e envia mensagens de chat para todos os clientes conectados (ou algum em específico).
+Formato do cabeçalho (no envio de arquivo)
+- `status` (1 byte)
+- `filename_len` (2 bytes, big-endian)
+- `filename` (utf-8)
+- `file_size` (8 bytes, big-endian)
+- `hash_len` (2 bytes, big-endian)
+- `hash` (bytes)
+
+## Multithreading
+O servidor possui uma thread para mensagens de chat no console, outra para aceitar novos clientes, e uma para cada cliente conectado.
+O cliente possui uma thread para envio de requests e outra para receber respostas do servidor.
+Por meio de um sistema de shutdown cooperativo, threads e sockets são fechados corretamente quando o servidor ou cliente terminam.

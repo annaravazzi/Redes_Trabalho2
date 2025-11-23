@@ -1,3 +1,7 @@
+"""
+Macros utilizadas no servidor e no cliente.
+"""
+
 class Commands:
     EXIT = "EXIT"
     GET_FILE = "GET_FILE"

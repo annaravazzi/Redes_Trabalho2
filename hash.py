@@ -1,5 +1,5 @@
 """
-Pequena biblioteca para cálculo e verificação de hashes (SHA256).
+Pequena biblioteca para cálculo e verificação de hashes.
 """
 
 import hashlib
