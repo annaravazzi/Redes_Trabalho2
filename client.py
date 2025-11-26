@@ -7,6 +7,7 @@ from host import Host
 import threading
 from macros import DIR_CLIENT, Commands, Status
 from hash import verify_hash
+import os
 
 class Client(Host):
     def __init__(self, IP, port):
@@ -44,8 +45,8 @@ class Client(Host):
 
                 if sel == '1':
                     filename = input("Enter filename to get: ")
-                    # req = f"{Commands.GET_FILE} {filename}"
-                    req = f"{Commands.WRONG_COMMAND} {filename}"      # Para testar comando inválido
+                    req = f"{Commands.GET_FILE} {filename}"
+                    # req = f"{Commands.WRONG_COMMAND} {filename}"      # Para testar comando inválido
                     filename = ""
                 elif sel == '2':
                     message = input("Enter chat message: ")
@@ -154,6 +155,8 @@ class Client(Host):
                 # Verifica o hash do arquivo recebido
                 if verify_hash(file_data, hash_value):
                     # Salva o arquivo na pasta do cliente
+                    if not os.path.exists(DIR_CLIENT):
+                        os.makedirs(DIR_CLIENT)
                     with open(DIR_CLIENT + filename, 'wb') as file:
                         file.write(file_data)
                     print(f"File '{filename}' received successfully and saved to '{DIR_CLIENT}'.")
